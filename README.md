@@ -76,12 +76,13 @@ npm start
 
 ### 运行一键校验：
 ```bash
+npx playwright install webkit
 npm run verify
 ```
 
 该校验工具将自动执行以下任务：
 1. **课程配置校验** (`scripts/validate-lessons.js`)：检测静态资源链接、初始代码、参考实现与测试用例的逻辑完整性。
-2. **多终端 UI 冒烟测试** (`tests/ui-smoke.spec.js`)：通过 Playwright 启动 Headless Chromium 模拟器，全面覆盖**桌面端和移动端**，测试包含进度存储、草稿恢复、专注模式、测试用例切换、面板溢出等在内的 12 个关键交互场景。
+2. **多终端 UI 冒烟测试** (`tests/ui-smoke.spec.js`)：通过 Playwright 在本地默认运行 WebKit，在 CI 同时运行 WebKit 和 Chromium，全面覆盖**桌面端和移动端**，测试包含进度存储、草稿恢复、专注模式、测试用例切换、面板溢出等在内的 12 个关键交互场景。
 
 ---
 

@@ -76,13 +76,11 @@ npm start
 
 ### 运行一键校验：
 ```bash
-npx playwright install webkit
 npm run verify
 ```
 
 该校验工具将自动执行以下任务：
 1. **课程配置校验** (`scripts/validate-lessons.js`)：检测静态资源链接、初始代码、参考实现与测试用例的逻辑完整性。
-2. **多终端 UI 冒烟测试** (`tests/ui-smoke.spec.js`)：通过 Playwright 在本地默认运行 WebKit，在 CI 同时运行 WebKit 和 Chromium，全面覆盖**桌面端和移动端**，测试包含进度存储、草稿恢复、专注模式、测试用例切换、面板溢出等在内的 12 个关键交互场景。
 
 ---
 
@@ -99,10 +97,9 @@ npm run verify
 ├── scripts/
 │   └── validate-lessons.js # 自动化关卡校验脚本
 ├── tests/
-│   └── ui-smoke.spec.js # Playwright UI 冒烟测试脚本
+│   └── native-ui.js # Safari UI 冒烟测试脚本
 ├── server.js            # 本地 C++ 编译 API 与静态服务器
 ├── package.json         # 项目元数据与脚本配置
-└── playwright.config.js # Playwright 测试框架配置
 ```
 
 ---
@@ -110,3 +107,5 @@ npm run verify
 ## 📄 开源许可证
 
 本项目基于 [MIT License](LICENSE) 协议开源。
+
+浏览器回归在 macOS 上使用系统 Safari，覆盖宽屏和窄屏布局。开启 Safari 开发者设置中的「允许远程自动化」后运行 `npm run verify`。

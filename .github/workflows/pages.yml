@@ -37,7 +37,11 @@ jobs:
         run: sudo safaridriver --enable
 
       - name: Verify lessons and UI
-        run: npm run verify
+        env:
+          CXX: /usr/bin/clang++
+        run: |
+          "$CXX" --version
+          npm run verify
 
       - name: Upload static site
         if: github.event_name != 'pull_request'

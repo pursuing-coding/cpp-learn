@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "check": "node scripts/validate-lessons.js",
+    "test:compiler": "node --test tests/compiler-probe.js",
     "smoke:ui": "node --test tests/native-ui.js",
-    "verify": "npm run check && npm run smoke:ui",
+    "verify": "npm run check && npm run test:compiler && npm run smoke:ui",
     "start": "node server.js",
     "preview": "node server.js"
   },

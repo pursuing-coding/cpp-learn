@@ -13,7 +13,6 @@ const progressStorageKey = "cpp-learn-progress-v2";
 const draftStorageKey = "cpp-learn-drafts-v2";
 const themeStorageKey = "cpp-learn-theme";
 const legacyStateStorageKey = "cpp-learn-state-v1";
-const maxDraftLength = 30_000;
 const judge0Endpoint = "https://ce.judge0.com/submissions?base64_encoded=true&wait=true";
 const cppGccLanguageId = 54;
 const cppCompilerOptions = "-std=c++17";
@@ -41,6 +40,8 @@ const answerDrawer = document.querySelector("#answerDrawer");
 const answerContent = document.querySelector("#answerContent");
 const showAnswer = document.querySelector("#showAnswer");
 const closeAnswer = document.querySelector("#closeAnswer");
+const trainingApp = document.querySelector(".training-app");
+const focusCode = document.querySelector("#focusCode");
 const focusModal = document.querySelector("#focusModal");
 const focusEditor = document.querySelector("#focusEditor");
 const focusLines = document.querySelector("#focusLines");
@@ -58,7 +59,7 @@ let lessonDrafts = readStoredDrafts();
 let selectedTestCaseIdByLessonId = {};
 let currentLessonIndex = 0;
 let hasLoadedLesson = false;
-let isRunning = false;
+let activeRun = null;
 
 function getLessonKey(lesson) {
   return String(lesson?.id ?? "");
@@ -172,22 +173,11 @@ function readStoredTheme() {
 function readStoredDrafts() {
   try {
     const raw = localStorage.getItem(draftStorageKey);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const drafts = parsed?.drafts && typeof parsed.drafts === "object" ? parsed.drafts : {};
-      return Object.fromEntries(
-        Object.entries(drafts)
-          .filter(([lessonId, code]) => typeof lessonId === "string" && typeof code === "string")
-          .map(([lessonId, code]) => [lessonId, code.slice(0, maxDraftLength)])
-      );
-    }
-
-    const legacy = readLegacyState();
-    const codeByChapter = legacy.codeByChapter && typeof legacy.codeByChapter === "object" ? legacy.codeByChapter : {};
+    const drafts = raw ? JSON.parse(raw)?.drafts : readLegacyState()?.codeByChapter;
     return Object.fromEntries(
-      Object.entries(codeByChapter)
-        .filter(([lessonId, code]) => typeof lessonId === "string" && typeof code === "string")
-        .map(([lessonId, code]) => [lessonId, code.slice(0, maxDraftLength)])
+      lessons
+        .map((lesson) => [getLessonKey(lesson), drafts?.[getLessonKey(lesson)]])
+        .filter(([, code]) => typeof code === "string")
     );
   } catch {
     return {};
@@ -497,50 +487,26 @@ function renderTestCases(lesson = getCurrentLesson()) {
     .join("");
 }
 
+const cppTokens = [
+  ["comment", /\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|(?![\s\S]))/],
+  ["string", /"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'/],
+  ["preprocessor", /^[ \t]*#[ \t]*\w+(?:[ \t]+[<"][^\r\n>"]*[>"])?/],
+  ["keyword", /\b(?:auto|break|case|catch|class|const|constexpr|const_cast|continue|default|delete|do|double|dynamic_cast|else|enum|explicit|export|extern|false|float|for|friend|goto|if|inline|int|long|mutable|namespace|new|noexcept|nullptr|operator|private|protected|public|register|reinterpret_cast|return|short|signed|sizeof|static|static_assert|static_cast|struct|switch|template|this|throw|true|try|typedef|typeid|typename|union|unsigned|using|virtual|void|volatile|while)\b/],
+  ["type", /\b(?:std::\w+|vector|string|map|unique_ptr|shared_ptr|make_unique|make_shared|cout|cin|endl|atomic|ostream|istream)\b/],
+  ["number", /\b\d+(?:\.\d+)?(?:f|u|ll?|ull)?\b/]
+];
+const cppTokenPattern = new RegExp(cppTokens.map(([, pattern]) => `(${pattern.source})`).join("|"), "gm");
+
 function highlightCpp(code) {
-  let html = code
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  const tokens = [];
-  const placeholderPrefix = "___TOKEN_PLACEHOLDER_";
-
-  // Match comments first to keep them intact
-  html = html.replace(/(\/\/.*|\/\*[\s\S]*?\*\/)/g, (match) => {
-    const id = placeholderPrefix + tokens.length + "___";
-    tokens.push(`<span class="hl-comment">${match}</span>`);
-    return id;
-  });
-
-  // Match strings next
-  html = html.replace(/("(\\.|[^"\\])*"|'(\\.|[^'\\])*')/g, (match) => {
-    const id = placeholderPrefix + tokens.length + "___";
-    tokens.push(`<span class="hl-string">${match}</span>`);
-    return id;
-  });
-
-  // Preprocessor directives
-  html = html.replace(/(^\s*#\s*\w+)/gm, '<span class="hl-preprocessor">$1</span>');
-  html = html.replace(/(#include\s*)(&lt;[^&]+&gt;|"([^"]+)")/g, '$1<span class="hl-include">$2</span>');
-
-  // Keywords
-  const keywords = /\b(auto|break|case|catch|class|const|constexpr|const_cast|continue|default|delete|do|double|dynamic_cast|else|enum|explicit|export|extern|false|float|for|friend|goto|if|inline|int|long|mutable|namespace|new|noexcept|nullptr|operator|private|protected|public|register|reinterpret_cast|return|short|signed|sizeof|static|static_assert|static_cast|struct|switch|template|this|throw|true|try|typedef|typeid|typename|union|unsigned|using|virtual|void|volatile|while)\b/g;
-  html = html.replace(keywords, '<span class="hl-keyword">$1</span>');
-
-  // Common Standard library types/objects
-  const stdTypes = /\b(std::\w+|vector|string|map|unique_ptr|shared_ptr|make_unique|make_shared|cout|cin|endl|atomic|ostream|istream)\b/g;
-  html = html.replace(stdTypes, '<span class="hl-type">$1</span>');
-
-  // Numbers
-  html = html.replace(/\b(\d+(\.\d+)?(f|u|l|ll|ull)?)\b/g, '<span class="hl-number">$1</span>');
-
-  // Restore comments and strings
-  for (let i = 0; i < tokens.length; i++) {
-    html = html.replace(placeholderPrefix + i + "___", tokens[i]);
+  let html = "";
+  let offset = 0;
+  for (const match of code.matchAll(cppTokenPattern)) {
+    const kind = cppTokens[match.slice(1).findIndex((token) => token !== undefined)][0];
+    html += escapeHtml(code.slice(offset, match.index));
+    html += `<span class="hl-${kind}">${escapeHtml(match[0])}</span>`;
+    offset = match.index + match[0].length;
   }
-
-  return html;
+  return html + escapeHtml(code.slice(offset));
 }
 
 function syncHighlight(textarea, highlightNode) {
@@ -591,16 +557,14 @@ function syncAnswerDrawerBounds() {
 }
 
 function getDraftForLesson(lesson) {
-  return typeof lessonDrafts[getLessonKey(lesson)] === "string" ? lessonDrafts[getLessonKey(lesson)] : "";
+  return lessonDrafts[getLessonKey(lesson)];
 }
 
 function setDraftForLesson(lesson, code) {
   if (!lesson?.id) return;
   const key = getLessonKey(lesson);
-  const value = String(code || "").slice(0, maxDraftLength);
-
-  if (value && value !== lesson.starterCode) {
-    lessonDrafts[key] = value;
+  if (code !== lesson.starterCode) {
+    lessonDrafts[key] = code;
   } else {
     delete lessonDrafts[key];
   }
@@ -619,8 +583,7 @@ function hasSavedDrafts() {
 
 function clearDrafts() {
   lessonDrafts = {};
-  localStorage.removeItem(draftStorageKey);
-  updateResetButtonState();
+  writeStoredDrafts();
 }
 
 function setProgress(nextCompletedLessons) {
@@ -664,6 +627,7 @@ function hideNextLessonAction() {
 
 function loadLesson(index) {
   if (!lessons[index] || isLessonLocked(index)) return;
+  cancelRun();
   if (hasLoadedLesson) saveCurrentDraft();
 
   currentLessonIndex = index;
@@ -671,7 +635,7 @@ function loadLesson(index) {
   const selected = getSelectedTestCase(lesson);
   const draft = getDraftForLesson(lesson);
 
-  codeEditor.value = draft || lesson.starterCode || "";
+  codeEditor.value = draft ?? lesson.starterCode ?? "";
   stdinInput.value = selected.stdin || "";
   syncEditorChrome(codeEditor, editorLines);
 
@@ -679,9 +643,7 @@ function loadLesson(index) {
   renderLessonContent(lesson, index);
   renderAnswerContent(lesson);
   renderTestCases(lesson);
-  consoleOutput.textContent = `Loaded: ${index + 1}. ${lesson.title}`;
-  runMeta.textContent = draft ? "草稿已恢复" : "等待运行";
-  runMeta.className = "run-meta";
+  setConsole(`Loaded: ${index + 1}. ${lesson.title}`, draft !== undefined ? "草稿已恢复" : "等待运行");
   setAnswerDrawer(false);
   hideNextLessonAction();
   syncAnswerDrawerBounds();
@@ -693,6 +655,7 @@ function setAnswerDrawer(open) {
   if (open) syncAnswerDrawerBounds();
   answerDrawer.classList.toggle("is-open", open);
   answerDrawer.setAttribute("aria-hidden", open ? "false" : "true");
+  answerDrawer.inert = !open;
   showAnswer.classList.toggle("is-active", open);
   showAnswer.setAttribute("aria-pressed", open ? "true" : "false");
   showAnswer.innerHTML = open
@@ -702,7 +665,11 @@ function setAnswerDrawer(open) {
 
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem(themeStorageKey, theme);
+  try {
+    localStorage.setItem(themeStorageKey, theme);
+  } catch {
+    // Keep the selected theme available for this session.
+  }
   themeToggle.innerHTML = `<span class="button-glyph">${theme === "dark" ? "☀" : "☾"}</span>`;
 }
 
@@ -762,13 +729,15 @@ function decodeBase64(value) {
   }
 }
 
-async function executeWithJudge0(code, stdin = "") {
+async function executeWithJudge0(code, stdin, signal) {
   const controller = new AbortController();
+  const cancelRequest = () => controller.abort();
+  signal.addEventListener("abort", cancelRequest, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), executionTimeoutMs);
 
-  let response;
+  let data;
   try {
-    response = await fetch(judge0Endpoint, {
+    const response = await fetch(judge0Endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -781,20 +750,20 @@ async function executeWithJudge0(code, stdin = "") {
         stdin: encodeBase64(stdin)
       })
     });
+    if (!response.ok) {
+      throw new Error(`在线编译服务响应异常 (${response.status})`);
+    }
+    data = await response.json();
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (controller.signal.aborted && !signal.aborted) {
       throw new Error("在线编译超时，请稍后重试");
     }
     throw error;
   } finally {
     window.clearTimeout(timeoutId);
+    signal.removeEventListener("abort", cancelRequest);
   }
 
-  if (!response.ok) {
-    throw new Error(`在线编译服务响应异常 (${response.status})`);
-  }
-
-  const data = await response.json();
   const stdout = decodeBase64(data.stdout);
   const stderr = decodeBase64(data.stderr || data.message);
   const compileOutput = decodeBase64(data.compile_output);
@@ -811,144 +780,139 @@ async function executeWithJudge0(code, stdin = "") {
   };
 }
 
-async function executeCode(code, stdin = "") {
+async function executeCode(code, stdin, signal) {
   const canUseBackend = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+  if (!canUseBackend) return executeWithJudge0(code, stdin, signal);
 
-  if (canUseBackend) {
-    try {
-      const response = await fetch("api/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, stdin })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        return {
-          status: result.status || "error",
-          stdout: result.stdout || "",
-          stderr: result.stderr || "",
-          compileOutput: result.compileOutput || "",
-          exitCode: result.exitCode ?? (result.status === "success" ? 0 : 1),
-          statusDescription: result.status || "local-runner",
-          durationMs: result.durationMs || 0
-        };
-      }
-    } catch {
-      // Fall through to the cloud runner when the local API is not reachable.
-    }
+  try {
+    const response = await fetch("api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+      body: JSON.stringify({ code, stdin })
+    });
+    const result = await response.json();
+    return {
+      status: response.ok ? result.status || "error" : "error",
+      stdout: result.stdout || "",
+      stderr: result.stderr || "",
+      compileOutput: result.compileOutput || "",
+      statusDescription: result.status || `HTTP ${response.status}`,
+      durationMs: result.durationMs || 0
+    };
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new Error("无法连接本地编译服务，请检查 npm start 是否正在运行。");
   }
-
-  return executeWithJudge0(code, stdin);
 }
 
-function renderRunResult(result, outputNode, metaNode) {
-  const combinedOutput = [result.compileOutput, result.stdout, result.stderr].filter(Boolean).join("\n");
-  outputNode.textContent = combinedOutput || "程序运行完成，但没有输出。";
-  metaNode.textContent = `${result.statusDescription || result.status} · ${result.durationMs || 0}ms`;
-  metaNode.className =
-    result.status === "success"
-      ? `${metaNode === runMeta ? "run-meta " : ""}status-success`
-      : result.status === "learning-preview" || result.status === "preview-limited"
-        ? `${metaNode === runMeta ? "run-meta " : ""}status-warn`
-        : `${metaNode === runMeta ? "run-meta " : ""}status-error`;
+function setConsole(text, status, severity = "") {
+  const statusClass = severity ? `status-${severity}` : "";
+  consoleOutput.textContent = text;
+  focusOutput.textContent = text;
+  runMeta.textContent = status;
+  focusRunMeta.textContent = status;
+  runMeta.className = statusClass ? `run-meta ${statusClass}` : "run-meta";
+  focusRunMeta.className = statusClass;
 }
 
-function markPassedTestCases(lesson, testCaseIds) {
-  if (testCaseIds.length === 0) return;
+function setPassedTestCases(lesson, testCaseIds) {
   const key = getLessonKey(lesson);
-  const nextPassedIds = new Set(passedTestCaseIdsByLessonId[key] || []);
-  testCaseIds.forEach((testCaseId) => nextPassedIds.add(testCaseId));
-  passedTestCaseIdsByLessonId = {
-    ...passedTestCaseIdsByLessonId,
-    [key]: Array.from(nextPassedIds)
-  };
+  passedTestCaseIdsByLessonId[key] = Array.from(new Set(testCaseIds));
   writeStoredProgress();
   renderTestCases(lesson);
   renderLessonContent(lesson, currentLessonIndex);
   updateResetButtonState();
 }
 
-function setRunning(nextRunning) {
-  isRunning = nextRunning;
+function setActiveRun(run) {
+  activeRun = run;
   document.querySelectorAll("#runCode, #submitTask, #focusRun").forEach((button) => {
-    button.disabled = nextRunning;
+    button.disabled = Boolean(run);
   });
 }
 
-async function runCode(sourceEditor = codeEditor, outputNode = consoleOutput, metaNode = runMeta, inputNode = stdinInput) {
-  if (isRunning) return null;
-  saveCurrentDraft();
-  setRunning(true);
-  outputNode.textContent = "正在运行 C++ 代码...";
-  metaNode.textContent = "运行中";
-  metaNode.className = metaNode === runMeta ? "run-meta" : "";
+function cancelRun() {
+  if (!activeRun) return;
+  activeRun.abort();
+  setActiveRun(null);
+}
 
+async function runCode() {
+  if (activeRun) return null;
+  saveCurrentDraft();
   const lesson = getCurrentLesson();
   const selected = getSelectedTestCase(lesson);
+  const sourceCode = codeEditor.value;
+  const stdin = stdinInput.value;
+  const run = new AbortController();
+  setActiveRun(run);
+  setConsole("正在运行 C++ 代码...", "运行中");
 
   try {
-    const result = await executeCode(sourceEditor.value, inputNode.value);
-    renderRunResult(result, outputNode, metaNode);
+    const result = await executeCode(sourceCode, stdin, run.signal);
+    if (activeRun !== run) return null;
 
-    const canCompare = normalizeOutput(inputNode.value) === normalizeOutput(selected.stdin);
-    if (result.status === "success" && canCompare && selected.expectedOutput) {
+    const preview = result.status === "learning-preview" || result.status === "preview-limited";
+    let text = [result.compileOutput, result.stdout, result.stderr].filter(Boolean).join("\n") || "程序运行完成，但没有输出。";
+    let status = `${result.statusDescription || result.status} · ${result.durationMs || 0}ms`;
+    let severity = result.status === "success" ? "success" : preview ? "warn" : "error";
+
+    if (result.status === "success" && stdin === (selected.stdin || "")) {
       const actual = normalizeOutput(result.stdout);
       const expected = normalizeOutput(selected.expectedOutput);
       if (actual === expected) {
-        markPassedTestCases(lesson, [selected.id]);
-        outputNode.textContent += `\n[测试用例通过: ${selected.title}]`;
+        setPassedTestCases(lesson, [...getPassedIds(lesson), selected.id]);
+        text += `\n[测试用例通过: ${selected.title}]`;
       } else {
         const mismatchExplanation = explainOutputMismatch(result.stdout, selected.expectedOutput);
-        outputNode.textContent += `\n[输出未匹配预期]\n预期输出:\n${selected.expectedOutput}\n实际输出:\n${formatTerminalBlock(result.stdout, "(空输出)")}\n[排查提示]: ${mismatchExplanation}\n[本章提示]: ${lesson.hint}`;
-        metaNode.textContent = "output-mismatch";
-        metaNode.className = metaNode === runMeta ? "run-meta status-warn" : "status-warn";
+        setPassedTestCases(lesson, [...getPassedIds(lesson)].filter((id) => id !== selected.id));
+        text += `\n[输出未匹配预期]\n预期输出:\n${selected.expectedOutput}\n实际输出:\n${formatTerminalBlock(result.stdout, "(空输出)")}\n[排查提示]: ${mismatchExplanation}\n[本章提示]: ${lesson.hint}`;
+        status = "output-mismatch";
+        severity = "warn";
       }
-    } else if (result.status === "success" && selected.expectedOutput) {
-      outputNode.textContent += `\n[当前标准输入已修改，未计入测试用例完成]\n当前测试用例输入应为:\n${formatTerminalBlock(selected.stdin, "(无标准输入)")}`;
-      metaNode.textContent = "custom-stdin";
-      metaNode.className = metaNode === runMeta ? "run-meta status-warn" : "status-warn";
-    } else if (result.status !== "success" && result.status !== "learning-preview" && result.status !== "preview-limited") {
+    } else if (result.status === "success") {
+      text += `\n[本次使用自定义输入，未计入测试用例完成]\n测试用例输入:\n${formatTerminalBlock(selected.stdin, "(无标准输入)")}`;
+      status = "custom-stdin";
+      severity = "warn";
+    } else if (!preview) {
       const explanation = explainExecutionIssue([result.compileOutput, result.stderr].filter(Boolean).join("\n"));
-      if (explanation) outputNode.textContent += `\n[错误提示]: ${explanation}\n[本章提示]: ${lesson.hint}`;
+      if (explanation) text += `\n[错误提示]: ${explanation}\n[本章提示]: ${lesson.hint}`;
     }
 
+    setConsole(text, status, severity);
     return result;
   } catch (error) {
+    if (activeRun !== run) return null;
     const message = error instanceof Error ? error.message : String(error);
-    outputNode.textContent = `[执行错误]: ${message}`;
-    metaNode.textContent = "run-error";
-    metaNode.className = metaNode === runMeta ? "run-meta status-error" : "status-error";
+    setConsole(`[执行错误]: ${message}`, "run-error", "error");
     return null;
   } finally {
-    setRunning(false);
+    if (activeRun === run) setActiveRun(null);
   }
 }
 
 async function runAllTests(options = {}) {
-  if (isRunning) return false;
+  if (activeRun) return false;
   saveCurrentDraft();
-  setRunning(true);
-
+  const lessonIndex = currentLessonIndex;
   const lesson = getCurrentLesson();
   const testCases = getTestCases(lesson);
   const sourceCode = codeEditor.value;
-  const nextPassedIds = new Set(passedTestCaseIdsByLessonId[getLessonKey(lesson)] || []);
   const passedThisRun = [];
   const lines = [`[运行本章全部测试: ${testCases.length} 个用例]`];
   let stoppedEarly = false;
-
-  consoleOutput.textContent = lines.join("\n");
-  runMeta.textContent = "运行中";
-  runMeta.className = "run-meta";
+  const run = new AbortController();
+  setActiveRun(run);
 
   try {
     for (let index = 0; index < testCases.length; index += 1) {
       const testCase = testCases[index];
       lines.push("", `[${index + 1}/${testCases.length}] ${testCase.title}`);
-      consoleOutput.textContent = lines.join("\n");
+      setConsole(lines.join("\n"), "运行中");
 
-      const result = await executeCode(sourceCode, testCase.stdin || "");
+      const result = await executeCode(sourceCode, testCase.stdin || "", run.signal);
+      if (activeRun !== run) return false;
 
       if (result.compileOutput) lines.push("[编译输出]", result.compileOutput);
       if (result.stderr) lines.push("[运行输出]", result.stderr);
@@ -966,7 +930,6 @@ async function runAllTests(options = {}) {
       const expected = normalizeOutput(testCase.expectedOutput);
 
       if (actual === expected) {
-        nextPassedIds.add(testCase.id);
         passedThisRun.push(testCase.id);
         lines.push(`[通过] ${testCase.title}`);
       } else {
@@ -981,15 +944,15 @@ async function runAllTests(options = {}) {
       }
     }
 
-    const passedCount = testCases.filter((testCase) => nextPassedIds.has(testCase.id)).length;
-    const allPassed = testCases.every((testCase) => nextPassedIds.has(testCase.id));
-    lines.push("", `[全测完成: 本次 ${passedThisRun.length}/${testCases.length} 通过，当前 ${passedCount}/${testCases.length} 通过]`);
+    const allPassed = passedThisRun.length === testCases.length;
+    lines.push("", `[全测完成: 本次 ${passedThisRun.length}/${testCases.length} 通过]`);
+    setPassedTestCases(lesson, passedThisRun);
 
     if (allPassed) {
       lines.push("[本章全部测试通过]");
       if (options.submitAfter) {
         const previousCompleted = completedLessons;
-        const nextCompleted = Math.max(completedLessons, currentLessonIndex + 1);
+        const nextCompleted = Math.max(completedLessons, lessonIndex + 1);
         setProgress(nextCompleted);
         renderLevels();
         if (nextCompleted > previousCompleted && lessons[nextCompleted]) {
@@ -1000,31 +963,24 @@ async function runAllTests(options = {}) {
           hideNextLessonAction();
         }
       }
-      runMeta.textContent = options.submitAfter ? "task-passed" : "all-tests-passed";
-      runMeta.className = "run-meta status-success";
+      setConsole(lines.join("\n"), options.submitAfter ? "task-passed" : "all-tests-passed", "success");
     } else {
       if (stoppedEarly) lines.push("[已提前停止，请先处理上面的编译或运行错误]");
-      runMeta.textContent = "tests-need-work";
-      runMeta.className = "run-meta status-warn";
       if (options.submitAfter) hideNextLessonAction();
+      setConsole(lines.join("\n"), "tests-need-work", "warn");
     }
 
-    if (passedThisRun.length > 0) {
-      markPassedTestCases(lesson, passedThisRun);
-    }
-
-    consoleOutput.textContent = lines.join("\n");
     return allPassed;
   } catch (error) {
+    if (activeRun !== run) return false;
     const message = error instanceof Error ? error.message : String(error);
     lines.push(`[执行错误]: ${message}`);
-    consoleOutput.textContent = lines.join("\n");
-    runMeta.textContent = "run-error";
-    runMeta.className = "run-meta status-error";
-    if (passedThisRun.length > 0) markPassedTestCases(lesson, passedThisRun);
+    setPassedTestCases(lesson, passedThisRun);
+    setConsole(lines.join("\n"), "run-error", "error");
+    if (options.submitAfter) hideNextLessonAction();
     return false;
   } finally {
-    setRunning(false);
+    if (activeRun === run) setActiveRun(null);
   }
 }
 
@@ -1080,7 +1036,22 @@ function autoIndentLine(textarea) {
 }
 
 function bindEditorShortcuts(textarea, runAction) {
+  let tabMovesFocus = false;
+  textarea.addEventListener("blur", () => { tabMovesFocus = false; });
   textarea.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+
+    if (event.key === "Escape") {
+      tabMovesFocus = true;
+      return;
+    }
+
+    if (event.key === "Tab" && tabMovesFocus) {
+      tabMovesFocus = false;
+      return;
+    }
+
+    tabMovesFocus = false;
     if (event.key === "Tab") {
       event.preventDefault();
       if (event.shiftKey) {
@@ -1114,6 +1085,17 @@ function bindEditorChrome(textarea, lineNode) {
   });
 }
 
+function saveEditorChange() {
+  const lesson = getCurrentLesson();
+  if (codeEditor.value === (getDraftForLesson(lesson) ?? lesson.starterCode)) return;
+  if (activeRun) {
+    cancelRun();
+    setConsole("代码已修改，请重新运行。", "等待运行");
+  }
+  saveCurrentDraft();
+  if (getPassedIds(lesson).size > 0) setPassedTestCases(lesson, []);
+}
+
 function bindEvents() {
   levelList.addEventListener("click", (event) => {
     const item = event.target.closest(".level-item");
@@ -1138,54 +1120,42 @@ function bindEvents() {
   document.querySelector("#runCode").addEventListener("click", () => runCode());
   document.querySelector("#submitTask").addEventListener("click", () => runAllTests({ submitAfter: true }));
 
-  codeEditor.addEventListener("input", () => {
-    syncEditorChrome(codeEditor, editorLines);
-    saveCurrentDraft();
-    renderLessonContent(getCurrentLesson());
-  });
+  codeEditor.addEventListener("input", saveEditorChange);
 
-  document.querySelector("#focusCode").addEventListener("click", () => {
+  focusCode.addEventListener("click", () => {
     saveCurrentDraft();
+    setAnswerDrawer(false);
     focusEditor.value = codeEditor.value;
     focusStdinInput.value = stdinInput.value;
     syncEditorChrome(focusEditor, focusLines);
-    focusOutput.textContent = consoleOutput.textContent || "";
-    focusRunMeta.textContent = runMeta.textContent || "等待运行";
-    focusRunMeta.className = runMeta.className.replace("run-meta", "").trim();
     focusModal.classList.add("is-open");
     focusModal.setAttribute("aria-hidden", "false");
+    trainingApp.inert = true;
     focusEditor.focus();
   });
 
-  document.querySelector("#closeFocus").addEventListener("click", () => {
+  focusEditor.addEventListener("input", () => {
     codeEditor.value = focusEditor.value;
-    stdinInput.value = focusStdinInput.value;
     syncEditorChrome(codeEditor, editorLines);
-    saveCurrentDraft();
-    consoleOutput.textContent = focusOutput.textContent;
-    runMeta.textContent = focusRunMeta.textContent;
-    runMeta.className = `run-meta ${focusRunMeta.className || ""}`.trim();
+    saveEditorChange();
+  });
+
+  document.querySelector("#closeFocus").addEventListener("click", () => {
+    stdinInput.value = focusStdinInput.value;
     focusModal.classList.remove("is-open");
     focusModal.setAttribute("aria-hidden", "true");
-    renderLessonContent(getCurrentLesson());
+    trainingApp.inert = false;
+    focusCode.focus();
   });
 
-  document.querySelector("#focusRun").addEventListener("click", () => {
-    codeEditor.value = focusEditor.value;
+  function runFocusedCode() {
     stdinInput.value = focusStdinInput.value;
-    syncEditorChrome(codeEditor, editorLines);
-    saveCurrentDraft();
-    runCode(focusEditor, focusOutput, focusRunMeta, focusStdinInput);
-  });
+    runCode();
+  }
 
-  bindEditorShortcuts(codeEditor, () => runCode());
-  bindEditorShortcuts(focusEditor, () => {
-    codeEditor.value = focusEditor.value;
-    stdinInput.value = focusStdinInput.value;
-    syncEditorChrome(codeEditor, editorLines);
-    saveCurrentDraft();
-    runCode(focusEditor, focusOutput, focusRunMeta, focusStdinInput);
-  });
+  document.querySelector("#focusRun").addEventListener("click", runFocusedCode);
+  bindEditorShortcuts(codeEditor, runCode);
+  bindEditorShortcuts(focusEditor, runFocusedCode);
   bindEditorChrome(codeEditor, editorLines);
   bindEditorChrome(focusEditor, focusLines);
 
@@ -1205,12 +1175,12 @@ function bindEvents() {
   });
   closeAnswer.addEventListener("click", () => {
     setAnswerDrawer(false);
+    showAnswer.focus();
   });
 
   document.querySelector("#clearConsole").addEventListener("click", () => {
-    consoleOutput.textContent = "";
-    runMeta.textContent = "已清空";
-    runMeta.className = "run-meta";
+    cancelRun();
+    setConsole("", "已清空");
   });
 
   document.querySelector("#clearStdin").addEventListener("click", () => {
@@ -1227,7 +1197,6 @@ function bindEvents() {
   resetProgress.addEventListener("click", () => {
     if (!resetProgress.disabled && !window.confirm("确认重置学习进度？")) return;
 
-    localStorage.removeItem(progressStorageKey);
     clearDrafts();
     passedTestCaseIdsByLessonId = {};
     completedLessons = 0;
@@ -1235,9 +1204,7 @@ function bindEvents() {
     hasLoadedLesson = false;
     setProgress(0);
     loadLesson(0);
-    consoleOutput.textContent = `Progress reset.\nLoaded: 1. ${getCurrentLesson().title}`;
-    runMeta.textContent = "已重置";
-    runMeta.className = "run-meta";
+    setConsole(`Progress reset.\nLoaded: 1. ${getCurrentLesson().title}`, "已重置");
   });
 
   themeToggle.addEventListener("click", () => {

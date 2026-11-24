@@ -14,8 +14,8 @@ async function hasHorizontalOverflow(page) {
 }
 
 async function mockCppRunner(page, resolver) {
-  page.mockRun(payload => {
-    const stdout = resolver(payload);
+  page.mockRun(async payload => {
+    const stdout = await resolver(payload);
     return {
         status: "success",
         stdout,
@@ -85,6 +85,7 @@ suite(test => {
 
     await check(() => page.locator("#stdinInput").value(), "5");
     await check(() => page.locator("#testSummary").text(), "0/3 通过");
+    await check(() => page.evaluate(() => document.querySelector("#stdinInput").getBoundingClientRect().height >= 72), true);
   });
 
   test("runs every standard case and unlocks progress through submit", async ({ page }) => {
@@ -148,7 +149,7 @@ suite(test => {
 
     await check(() => page.locator("#codeEditor").value(), /TODO: 输出 Hello, C\+\+ World!/);
     await check(() => page.locator("#resetProgress").enabled(), false);
-    assert.equal(await page.evaluate(() => localStorage.getItem("cpp-learn-drafts-v2")), null);
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("cpp-learn-drafts-v2")).drafts), {});
   });
 
   test("sends standard input to the runner and supports focus mode", async ({ page }) => {
@@ -177,6 +178,17 @@ suite(test => {
 
   test("core UI panels open without layout overflow", async ({ page }) => {
     await check(() => hasHorizontalOverflow(page), false);
+    await check(() => page.evaluate(() => {
+      const run = document.querySelector("#runCode").getBoundingClientRect();
+      return run.width > 0 && run.right <= document.documentElement.clientWidth;
+    }), true);
+
+    const editorStylesMatch = (editorId, highlightId) => page.evaluate((editor, highlight) => {
+      const textarea = getComputedStyle(document.getElementById(editor));
+      const visible = getComputedStyle(document.getElementById(highlight));
+      return ["fontFamily", "fontSize", "lineHeight", "padding", "whiteSpace"].every(key => textarea[key] === visible[key]);
+    }, editorId, highlightId);
+    await check(() => editorStylesMatch("codeEditor", "editorHighlight"), true);
 
     await page.locator("#showAnswer").click();
     await check(() => page.locator("#answerDrawer").attribute("class"), /is-open/);
@@ -187,7 +199,47 @@ suite(test => {
     await page.locator("#focusCode").click();
     await check(() => page.locator("#focusModal").attribute("class"), /is-open/);
     await check(() => hasHorizontalOverflow(page), false);
+    await check(() => editorStylesMatch("focusEditor", "focusHighlight"), true);
     await page.locator("#closeFocus").click();
     await check(() => page.locator("#focusModal").attribute("class"), /is-open/, "notMatch");
+  });
+
+  test("only the current submission can unlock the next lesson", async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem("cpp-learn-progress-v2", JSON.stringify({
+      completedLessons: 0,
+      passedTestCaseIdsByLessonId: { "1": ["default"] }
+    })));
+    await page.reload();
+    await mockCppRunner(page, () => "wrong output\n");
+    await page.locator("#submitTask").click();
+    await check(() => page.locator("#consoleOutput").text(), "本次 0/1 通过", "contains");
+    await check(() => page.locator("#progressText").text(), "0/13 章");
+    await check(() => page.locator(".level-item").nth(1).enabled(), false);
+  });
+
+  test("ignores unfinished submissions after changing lesson", async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem("cpp-learn-progress-v2", JSON.stringify({ completedLessons: 1 })));
+    await page.reload();
+
+    let received = false;
+    let finishRun;
+    const result = new Promise(resolve => { finishRun = resolve; });
+    await mockCppRunner(page, () => { received = true; return result; });
+    try {
+      await page.locator("#submitTask").click();
+      await check(() => received, true);
+      await page.locator(".level-item").nth(1).click();
+      await check(() => page.locator("#submitTask").enabled(), true);
+    } finally {
+      finishRun("Hello, C++ World!\n");
+    }
+    await check(() => page.locator("#progressText").text(), "1/13 章");
+    await check(() => page.locator("#lessonArticle h1").text(), /^2\. 变量、内存与类型系统/);
+  });
+
+  test("uses the local compiler when the runner is not mocked", async ({ page }) => {
+    await page.locator("#codeEditor").fill(helloWorld);
+    await page.locator("#runCode").click();
+    await check(() => page.locator("#consoleOutput").text(), "[测试用例通过: 默认样例]", "contains", 15_000);
   });
 });

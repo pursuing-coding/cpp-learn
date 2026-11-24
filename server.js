@@ -11,6 +11,7 @@ const host = "127.0.0.1";
 const publicDir = resolve("public");
 const maxCodeLength = 30_000;
 const maxOutputLength = 20_000;
+const compilerProbeTimeoutMs = 8_000;
 const compileTimeoutMs = 8_000;
 const runTimeoutMs = 5_000;
 
@@ -122,7 +123,7 @@ async function getCompilerStatus() {
   if (!compilerStatusPromise) {
     compilerStatusPromise = (async () => {
       for (const command of uniqueCompilerCandidates()) {
-        const result = await runCommand(command, ["--version"], { timeoutMs: 2_000 });
+        const result = await runCommand(command, ["--version"], { timeoutMs: compilerProbeTimeoutMs });
         if (result.ok) {
           return {
             available: true,
@@ -133,6 +134,8 @@ async function getCompilerStatus() {
         }
       }
 
+      // Share an in-flight probe, but let the next request retry a transient failure.
+      compilerStatusPromise = undefined;
       return {
         available: false,
         demoMode: true,

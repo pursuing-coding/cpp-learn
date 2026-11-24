@@ -7,7 +7,7 @@ import safari from "selenium-webdriver/safari.js";
 import { setTimeout as delay } from "node:timers/promises";
 
 export function suite(register) {
-  for (const width of [1440, 390]) describe(`Safari ${width}px`, () => {
+  for (const width of [1440, 1024, 390]) describe(`Safari ${width}px`, () => {
     let driver, service, origin, proxy, app, appUrl, run, confirm;
     const page = {
       evaluate: (fn, ...args) => driver.executeScript(fn, ...args),
@@ -58,16 +58,26 @@ export function suite(register) {
         await check(async () => (await fetch(appUrl)).ok, true);
         proxy = http.createServer(async (req, res) => {
           try {
-            if (req.url === "/api/run" && run) {
+            if (req.method === "POST" && req.url === "/api/run" && run) {
+              const mock = run;
               const body = [];
               for await (const chunk of req) body.push(chunk);
+              const result = await mock(JSON.parse(Buffer.concat(body)));
+              if (res.destroyed) return;
               res.setHeader("Content-Type", "application/json");
-              res.end(JSON.stringify(run(JSON.parse(Buffer.concat(body)))));
+              res.end(JSON.stringify(result));
               return;
             }
-            const target = await fetch(new URL(req.url, appUrl));
-            res.writeHead(target.status, {"Content-Type":target.headers.get("content-type") || "application/octet-stream"});
-            res.end(Buffer.from(await target.arrayBuffer()));
+            const upstream = http.request(appUrl, { method: req.method, path: req.url, headers: req.headers }, response => {
+              res.writeHead(response.statusCode, response.headers);
+              response.pipe(res);
+            });
+            upstream.on("error", error => {
+              if (!res.headersSent) res.writeHead(502);
+              res.end(String(error));
+            });
+            res.on("close", () => upstream.destroy());
+            req.pipe(upstream);
           } catch (error) { res.writeHead(500); res.end(String(error)); }
         });
         await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
@@ -92,8 +102,8 @@ export function suite(register) {
     register((name, fn) => nodeTest(name, () => fn({page})));
   });
 }
-export async function check(read, expected, mode = "equal") {
-  const deadline = Date.now() + 5000;
+export async function check(read, expected, mode = "equal", timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
       const value = await read();

@@ -570,7 +570,7 @@ int main() {
 
 class ResourceManager {
 public:
-    int* data;
+    int* data = nullptr;
 
     ResourceManager(int value) {
         data = new int(value);
@@ -582,7 +582,7 @@ public:
 
     // 拷贝构造函数（深拷贝）
     ResourceManager(const ResourceManager& other) {
-        data = new int(*other.data);
+        data = other.data ? new int(*other.data) : nullptr;
     }
 
     // TODO: 实现移动构造函数
@@ -625,7 +625,7 @@ public:
 
     // 拷贝构造函数（深拷贝）
     ResourceManager(const ResourceManager& other) {
-        data = new int(*other.data);
+        data = other.data ? new int(*other.data) : nullptr;
     }
 
     // 移动构造函数

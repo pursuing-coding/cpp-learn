@@ -7,6 +7,7 @@ import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const port = Number(process.env.PORT || 4173);
+const host = "127.0.0.1";
 const publicDir = resolve("public");
 const maxCodeLength = 30_000;
 const maxOutputLength = 20_000;
@@ -44,13 +45,16 @@ function sendText(response, statusCode, text, contentType = "text/plain; charset
 function readBody(request) {
   return new Promise((resolveBody, rejectBody) => {
     let body = "";
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > 96_000) {
-        request.destroy();
-        rejectBody(new Error("Request body is too large."));
+    request.setEncoding("utf8");
+    const readChunk = (chunk) => {
+      if (body.length + chunk.length > 96_000) {
+        request.off("data", readChunk);
+        rejectBody(new RangeError("请求内容过大。"));
+        return;
       }
-    });
+      body += chunk;
+    };
+    request.on("data", readChunk);
     request.on("end", () => resolveBody(body));
     request.on("error", rejectBody);
   });
@@ -68,36 +72,44 @@ function runCommand(command, args, options = {}) {
     let stdout = "";
     let stderr = "";
     let didTimeOut = false;
+    let outputLimitReached = false;
     const timer = setTimeout(() => {
       didTimeOut = true;
       child.kill("SIGKILL");
     }, options.timeoutMs || runTimeoutMs);
 
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-      if (stdout.length > maxOutputLength) child.kill("SIGKILL");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.length > maxOutputLength) child.kill("SIGKILL");
-    });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    function collectOutput(previous, chunk) {
+      if (previous.length + chunk.length > maxOutputLength) {
+        outputLimitReached = true;
+        child.kill("SIGKILL");
+      }
+      return previous + chunk.slice(0, maxOutputLength - previous.length);
+    }
+    child.stdout.on("data", (chunk) => { stdout = collectOutput(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = collectOutput(stderr, chunk); });
     child.on("error", (error) => {
       clearTimeout(timer);
       resolveRun({ ok: false, missingCommand: error.code === "ENOENT", error, stdout, stderr });
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
+      const diagnostic = outputLimitReached
+        ? `输出超过 ${maxOutputLength} 字符限制，已停止。`
+        : signal && !didTimeOut ? `进程因 ${signal} 退出。` : "";
       resolveRun({
-        ok: code === 0 && !didTimeOut,
+        ok: code === 0 && !didTimeOut && !outputLimitReached,
         code,
         didTimeOut,
-        stdout: stdout.slice(0, maxOutputLength),
-        stderr: stderr.slice(0, maxOutputLength)
+        stdout,
+        stderr: [stderr, diagnostic].filter(Boolean).join("\n")
       });
     });
 
-    if (options.stdin) child.stdin.write(options.stdin);
-    child.stdin.end();
+    // An exercise may exit before consuming stdin. Use the exit status to report its result.
+    child.stdin.on("error", () => {});
+    child.stdin.end(options.stdin);
   });
 }
 
@@ -271,13 +283,16 @@ async function handleRun(request, response) {
   let payload;
   try {
     payload = JSON.parse(await readBody(request));
-  } catch {
-    sendJson(response, 400, { status: "error", stdout: "", stderr: "请求格式不是有效的 JSON。", durationMs: 0 });
+  } catch (error) {
+    const tooLarge = error instanceof RangeError;
+    sendJson(response, tooLarge ? 413 : 400, {
+      status: "error", stdout: "", stderr: tooLarge ? error.message : "请求格式不是有效的 JSON。", durationMs: 0
+    });
     return;
   }
 
-  const code = String(payload.code || "");
-  const stdin = String(payload.stdin || "");
+  const code = typeof payload?.code === "string" ? payload.code : "";
+  const stdin = typeof payload?.stdin === "string" ? payload.stdin : "";
 
   if (!code.trim()) {
     sendJson(response, 400, { status: "error", stdout: "", stderr: "No code submitted.", durationMs: 0 });
@@ -393,6 +408,11 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "POST" && request.url?.startsWith("/api/run")) {
+      const origin = request.headers.origin;
+      if (origin && (origin !== `http://${request.headers.host}` || !/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin))) {
+        sendJson(response, 403, { status: "error", stdout: "", stderr: "请从本地课程页面运行代码。", durationMs: 0 });
+        return;
+      }
       await handleRun(request, response);
       return;
     }
@@ -406,6 +426,6 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`cpp-learn is running at http://localhost:${port}`);
+server.listen(port, host, () => {
+  console.log(`cpp-learn is running at http://${host}:${server.address().port}`);
 });

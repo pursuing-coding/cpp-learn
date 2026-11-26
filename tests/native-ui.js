@@ -248,20 +248,25 @@ suite(test => {
       frame.src = "./";
       document.body.append(frame);
     });
-    await check(() => page.evaluate(() =>
-      document.querySelector("#resetTab").contentDocument.querySelector("#resetProgress")?.disabled === false
-    ), true);
+    await check(() => page.evaluate(() => {
+      const doc = document.querySelector("#resetTab").contentDocument;
+      return doc.querySelector(".level-item.is-active") !== null &&
+        doc.querySelector("#progressText")?.textContent === "1/13 章" &&
+        doc.querySelector("#resetProgress")?.disabled === false;
+    }), true);
 
     let reply;
     await mockCppRunner(page, () => new Promise(resolve => { reply = resolve; }));
     try {
       await page.locator("#submitTask").click();
       await check(() => typeof reply, "function");
-      await page.evaluate(() => {
+      const didReset = await page.evaluate(() => {
         const other = document.querySelector("#resetTab").contentWindow;
         other.confirm = () => true;
         other.document.querySelector("#resetProgress").click();
+        return Boolean(other.localStorage.getItem("cpp-learn-reset-v3"));
       });
+      assert.equal(didReset, true);
       reply("Hello, C++ World!\n");
       await check(() => page.locator("#progressText").text(), "0/13 章");
       await check(() => page.locator("#testSummary").text(), "0/1 通过");

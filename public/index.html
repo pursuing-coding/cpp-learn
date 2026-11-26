@@ -9,9 +9,21 @@
       content="面向 C++ 入门到进阶学习的浏览器课程实验室，支持代码练习、测试用例和本地/在线运行。"
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <script>
+      try {
+        const theme = localStorage.getItem("cpp-learn-theme");
+        const legacy = theme ? null : JSON.parse(localStorage.getItem("cpp-learn-state-v1"));
+        if ((theme ?? legacy?.theme) === "dark") document.documentElement.dataset.theme = "dark";
+      } catch {}
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
     <link rel="stylesheet" href="./styles.css" />
     <script src="./course-data.js" defer></script>
     <script src="./app.js" defer></script>
@@ -79,24 +91,26 @@
 
         <section class="practice-column" aria-label="C++ 编辑器与输出">
           <div class="editor-panel">
-            <div class="panel-toolbar">
-              <span><b class="tool-mark">{ }</b> C++ 编辑器 <em>main.cpp</em></span>
-              <div>
-                <button class="soft-button" id="focusCode" type="button">
-                  <span class="button-glyph">↗</span>
-                  专注代码
-                </button>
-                <button class="soft-button" id="showAnswer" type="button">
-                  <span class="button-glyph">?</span>
-                  查看答案
-                </button>
-                <button class="run-button" id="runCode" type="button">
-                  <span class="button-glyph">▶</span>
-                  运行代码
-                </button>
+            <div>
+              <div class="panel-toolbar">
+                <span><b class="tool-mark">{ }</b> C++ 编辑器 <em>main.cpp</em></span>
+                <div>
+                  <button class="soft-button" id="focusCode" type="button">
+                    <span class="button-glyph">↗</span>
+                    专注代码
+                  </button>
+                  <button class="soft-button" id="showAnswer" type="button">
+                    <span class="button-glyph">?</span>
+                    查看答案
+                  </button>
+                  <button class="run-button" id="runCode" type="button">
+                    <span class="button-glyph">▶</span>
+                    运行代码
+                  </button>
+                </div>
               </div>
+              <p id="runnerNotice" class="runner-notice" hidden>在线运行和提交会将源码及标准输入发送至 Judge0。</p>
             </div>
-            <p id="runnerNotice" class="runner-notice" hidden>在线运行和提交会将源码及标准输入发送至 Judge0。</p>
             <div class="code-surface">
               <pre class="editor-lines" id="editorLines" aria-hidden="true">1</pre>
               <div class="editor-container">

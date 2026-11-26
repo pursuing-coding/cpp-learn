@@ -1616,3 +1616,10 @@ a:hover {
     flex-wrap: wrap;
   }
 }
+
+.runner-notice {
+  margin: 0;
+  padding: 0 14px 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}

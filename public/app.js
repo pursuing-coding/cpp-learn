@@ -11,11 +11,13 @@ const courseGroups = groupDefinitions
 
 const progressStorageKey = "cpp-learn-progress-v2";
 const draftStorageKey = "cpp-learn-drafts-v2";
+const resetStorageKey = "cpp-learn-reset-v3";
 const themeStorageKey = "cpp-learn-theme";
 const legacyStateStorageKey = "cpp-learn-state-v1";
-const judge0Endpoint = "https://ce.judge0.com/submissions?base64_encoded=true&wait=true";
+const judge0Endpoint = "https://ce.judge0.com/submissions";
 const cppGccLanguageId = 54;
 const cppCompilerOptions = "-std=c++17";
+const usesLocalRunner = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const executionTimeoutMs = 45_000;
 const defaultSources = [
   { title: "cppreference: C++ language", url: "https://en.cppreference.com/w/cpp/language" },
@@ -52,13 +54,14 @@ const nextLessonButton = document.querySelector("#nextLesson");
 const testCaseList = document.querySelector("#testCaseList");
 const testSummary = document.querySelector("#testSummary");
 
-let storedProgress = readStoredProgress();
+const storedProgress = readStoredProgress() ?? emptyProgress("");
+let progressResetId = storedProgress.resetId;
 let completedLessons = storedProgress.completedLessons;
 let passedTestCaseIdsByLessonId = storedProgress.passedTestCaseIdsByLessonId;
-let lessonDrafts = readStoredDrafts();
+let lessonDrafts = readStoredDrafts() ?? {};
 let selectedTestCaseIdByLessonId = {};
 let currentLessonIndex = 0;
-let hasLoadedLesson = false;
+
 let activeRun = null;
 
 function getLessonKey(lesson) {
@@ -87,17 +90,24 @@ function normalizeCompletedCount(value) {
 function readLegacyState() {
   try {
     const raw = localStorage.getItem(legacyStateStorageKey);
-    return raw ? JSON.parse(raw) : {};
+    return raw ? JSON.parse(raw) ?? {} : {};
   } catch {
     return {};
   }
 }
 
+function emptyProgress(resetId) {
+  return { resetId, completedLessons: 0, passedTestCaseIdsByLessonId: {} };
+}
+
 function readStoredProgress() {
+  let resetId;
   try {
+    resetId = localStorage.getItem(resetStorageKey);
     const raw = localStorage.getItem(progressStorageKey);
     if (raw) {
       const parsed = JSON.parse(raw);
+      if ((parsed.resetId ?? "") !== (resetId ?? "")) return emptyProgress(resetId ?? "");
       const completedIds = Array.isArray(parsed.completedLessonIds)
         ? new Set(parsed.completedLessonIds.map(String))
         : new Set();
@@ -108,6 +118,7 @@ function readStoredProgress() {
       }
 
       return {
+        resetId: resetId ?? "",
         completedLessons: normalizeCompletedCount(
           completedIds.size > 0 ? completedCount : parsed.completedLessons
         ),
@@ -118,6 +129,7 @@ function readStoredProgress() {
       };
     }
 
+    if (resetId !== null) return emptyProgress(resetId);
     const legacy = readLegacyState();
     if (Array.isArray(legacy.completedChapterIds)) {
       let completedCount = 0;
@@ -127,6 +139,7 @@ function readStoredProgress() {
       }
 
       return {
+        resetId: "",
         completedLessons: normalizeCompletedCount(completedCount),
         passedTestCaseIdsByLessonId:
           legacy.passedTestCaseIdsByChapter && typeof legacy.passedTestCaseIdsByChapter === "object"
@@ -135,10 +148,10 @@ function readStoredProgress() {
       };
     }
   } catch {
-    // Ignore invalid localStorage payloads.
+    return resetId == null ? null : emptyProgress(resetId);
   }
 
-  return { completedLessons: 0, passedTestCaseIdsByLessonId: {} };
+  return emptyProgress("");
 }
 
 function normalizePassedMap(value) {
@@ -173,22 +186,27 @@ function readStoredTheme() {
 function readStoredDrafts() {
   try {
     const raw = localStorage.getItem(draftStorageKey);
-    const drafts = raw ? JSON.parse(raw)?.drafts : readLegacyState()?.codeByChapter;
+    const parsed = raw ? JSON.parse(raw) : null;
+    const drafts = parsed && (parsed.resetId ?? "") === progressResetId
+      ? parsed.drafts
+      : progressResetId === "" && !raw ? readLegacyState().codeByChapter : {};
     return Object.fromEntries(
       lessons
         .map((lesson) => [getLessonKey(lesson), drafts?.[getLessonKey(lesson)]])
         .filter(([, code]) => typeof code === "string")
     );
   } catch {
-    return {};
+    return null;
   }
 }
 
 function writeStoredDrafts() {
   try {
+    if ((localStorage.getItem(resetStorageKey) ?? "") !== progressResetId) return;
     localStorage.setItem(
       draftStorageKey,
       JSON.stringify({
+        resetId: progressResetId,
         drafts: lessonDrafts,
         updatedAt: new Date().toISOString()
       })
@@ -200,9 +218,11 @@ function writeStoredDrafts() {
 
 function writeStoredProgress() {
   try {
+    if ((localStorage.getItem(resetStorageKey) ?? "") !== progressResetId) return;
     localStorage.setItem(
       progressStorageKey,
       JSON.stringify({
+        resetId: progressResetId,
         completedLessons,
         completedLessonIds: lessons.slice(0, completedLessons).map(getLessonKey),
         passedTestCaseIdsByLessonId,
@@ -212,6 +232,25 @@ function writeStoredProgress() {
   } catch {
     // Progress persistence is optional.
   }
+}
+
+function refreshStoredProgress() {
+  const latest = readStoredProgress();
+  if (!latest) return true;
+  const completionChanged = latest.completedLessons !== completedLessons;
+  completedLessons = latest.completedLessons;
+  passedTestCaseIdsByLessonId = latest.passedTestCaseIdsByLessonId;
+  if (latest.resetId !== progressResetId || isLessonLocked(currentLessonIndex)) {
+    progressResetId = latest.resetId;
+    lessonDrafts = readStoredDrafts() ?? {};
+    showProgressReset();
+    return false;
+  }
+  if (completionChanged) {
+    renderProgress();
+    renderLevels();
+  }
+  return true;
 }
 
 function getCurrentLesson() {
@@ -560,39 +599,36 @@ function getDraftForLesson(lesson) {
   return lessonDrafts[getLessonKey(lesson)];
 }
 
-function setDraftForLesson(lesson, code) {
-  if (!lesson?.id) return;
+function saveCurrentDraft() {
+  const lesson = getCurrentLesson();
   const key = getLessonKey(lesson);
-  if (code !== lesson.starterCode) {
-    lessonDrafts[key] = code;
-  } else {
-    delete lessonDrafts[key];
-  }
-
+  const source = codeEditor.value;
+  if (source === (getDraftForLesson(lesson) ?? lesson.starterCode ?? "")) return;
+  lessonDrafts = readStoredDrafts() ?? lessonDrafts;
+  if (source === (lesson.starterCode ?? "")) delete lessonDrafts[key];
+  else lessonDrafts[key] = source;
   writeStoredDrafts();
   updateResetButtonState();
-}
-
-function saveCurrentDraft() {
-  setDraftForLesson(getCurrentLesson(), codeEditor.value);
+  if (getPassedIds(lesson).size > 0) setPassedTestCases(lesson, []);
 }
 
 function hasSavedDrafts() {
   return Object.keys(lessonDrafts).length > 0;
 }
 
-function clearDrafts() {
-  lessonDrafts = {};
-  writeStoredDrafts();
+function showProgressReset() {
+  if (focusModal.classList.contains("is-open")) document.querySelector("#closeFocus").click();
+  selectedTestCaseIdByLessonId = {};
+  renderProgress();
+  loadLesson(0);
+  setConsole("Progress reset.\nLoaded: 1. " + getCurrentLesson().title, "已重置");
 }
 
-function setProgress(nextCompletedLessons) {
-  completedLessons = normalizeCompletedCount(nextCompletedLessons);
+function renderProgress() {
   const percent = totalLessons === 0 ? 0 : Math.round((completedLessons / totalLessons) * 100);
-  progressText.textContent = `${completedLessons}/${totalLessons} 章`;
-  progressPercent.textContent = `${percent}%`;
-  progressBar.style.width = `${percent}%`;
-  writeStoredProgress();
+  progressText.textContent = completedLessons + "/" + totalLessons + " 章";
+  progressPercent.textContent = percent + "%";
+  progressBar.style.width = percent + "%";
   updateResetButtonState();
 }
 
@@ -628,7 +664,7 @@ function hideNextLessonAction() {
 function loadLesson(index) {
   if (!lessons[index] || isLessonLocked(index)) return;
   cancelRun();
-  if (hasLoadedLesson) saveCurrentDraft();
+  lessonDrafts = readStoredDrafts() ?? lessonDrafts;
 
   currentLessonIndex = index;
   const lesson = getCurrentLesson();
@@ -647,7 +683,6 @@ function loadLesson(index) {
   setAnswerDrawer(false);
   hideNextLessonAction();
   syncAnswerDrawerBounds();
-  hasLoadedLesson = true;
   updateResetButtonState();
 }
 
@@ -729,6 +764,49 @@ function decodeBase64(value) {
   }
 }
 
+async function fetchJudge0Result(payload, signal) {
+  const response = await fetch(judge0Endpoint + "?base64_encoded=true&wait=false", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal,
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw new Error("在线运行服务提交失败 (HTTP " + response.status + ")。");
+
+  const submission = await response.json();
+  // Some instances return an already completed result.
+  if (Number.isInteger(submission.status?.id) && submission.status.id > 2) return submission;
+  if (typeof submission.token !== "string" || !submission.token) {
+    throw new Error("在线运行服务没有返回提交令牌。");
+  }
+
+  const resultUrl = judge0Endpoint + "/" + encodeURIComponent(submission.token) + "?base64_encoded=true";
+  while (true) {
+    await new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      const abort = () => {
+        window.clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, 500);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    const result = await fetch(resultUrl, { signal, cache: "no-store" });
+    if (!result.ok) throw new Error("在线运行服务查询失败 (HTTP " + result.status + ")。");
+    const data = await result.json();
+    if (!Number.isInteger(data.status?.id) || data.status.id < 1) {
+      throw new Error("在线运行服务返回了无效状态。");
+    }
+    if (data.status.id > 2) return data;
+  }
+}
+
 async function executeWithJudge0(code, stdin, signal) {
   const controller = new AbortController();
   const cancelRequest = () => controller.abort();
@@ -737,23 +815,12 @@ async function executeWithJudge0(code, stdin, signal) {
 
   let data;
   try {
-    const response = await fetch(judge0Endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        source_code: encodeBase64(code),
-        language_id: cppGccLanguageId,
-        compiler_options: cppCompilerOptions,
-        stdin: encodeBase64(stdin)
-      })
-    });
-    if (!response.ok) {
-      throw new Error(`在线编译服务响应异常 (${response.status})`);
-    }
-    data = await response.json();
+    data = await fetchJudge0Result({
+      source_code: encodeBase64(code),
+      language_id: cppGccLanguageId,
+      compiler_options: cppCompilerOptions,
+      stdin: encodeBase64(stdin)
+    }, controller.signal);
   } catch (error) {
     if (controller.signal.aborted && !signal.aborted) {
       throw new Error("在线编译超时，请稍后重试");
@@ -776,13 +843,12 @@ async function executeWithJudge0(code, stdin, signal) {
     compileOutput,
     exitCode: statusId === 3 ? 0 : statusId,
     statusDescription: data.status?.description || "Unknown",
-    durationMs: 0
+    durationMs: Math.round(Number(data.time) * 1000) || 0
   };
 }
 
 async function executeCode(code, stdin, signal) {
-  const canUseBackend = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-  if (!canUseBackend) return executeWithJudge0(code, stdin, signal);
+  if (!usesLocalRunner) return executeWithJudge0(code, stdin, signal);
 
   try {
     const response = await fetch("api/run", {
@@ -832,6 +898,17 @@ function setActiveRun(run) {
   });
 }
 
+function canApplyRun(run, lesson, source) {
+  if (activeRun !== run || !refreshStoredProgress()) return false;
+  const storedDrafts = readStoredDrafts();
+  if (storedDrafts &&
+      storedDrafts[getLessonKey(lesson)] !== getDraftForLesson(lesson)) {
+    setConsole("本章草稿已在其他页面更新，请重新打开本章后再运行。", "等待运行", "warn");
+    return false;
+  }
+  return source === codeEditor.value;
+}
+
 function cancelRun() {
   if (!activeRun) return;
   activeRun.abort();
@@ -839,8 +916,7 @@ function cancelRun() {
 }
 
 async function runCode() {
-  if (activeRun) return null;
-  saveCurrentDraft();
+  if (activeRun || !refreshStoredProgress()) return null;
   const lesson = getCurrentLesson();
   const selected = getSelectedTestCase(lesson);
   const sourceCode = codeEditor.value;
@@ -851,7 +927,7 @@ async function runCode() {
 
   try {
     const result = await executeCode(sourceCode, stdin, run.signal);
-    if (activeRun !== run) return null;
+    if (!canApplyRun(run, lesson, sourceCode)) return null;
 
     const preview = result.status === "learning-preview" || result.status === "preview-limited";
     let text = [result.compileOutput, result.stdout, result.stderr].filter(Boolean).join("\n") || "程序运行完成，但没有输出。";
@@ -893,8 +969,7 @@ async function runCode() {
 }
 
 async function runAllTests(options = {}) {
-  if (activeRun) return false;
-  saveCurrentDraft();
+  if (activeRun || !refreshStoredProgress()) return false;
   const lessonIndex = currentLessonIndex;
   const lesson = getCurrentLesson();
   const testCases = getTestCases(lesson);
@@ -944,16 +1019,18 @@ async function runAllTests(options = {}) {
       }
     }
 
+    if (!canApplyRun(run, lesson, sourceCode)) return false;
     const allPassed = passedThisRun.length === testCases.length;
+    const previousCompleted = completedLessons;
+    if (allPassed && options.submitAfter) completedLessons = Math.max(completedLessons, lessonIndex + 1);
     lines.push("", `[全测完成: 本次 ${passedThisRun.length}/${testCases.length} 通过]`);
     setPassedTestCases(lesson, passedThisRun);
 
     if (allPassed) {
       lines.push("[本章全部测试通过]");
       if (options.submitAfter) {
-        const previousCompleted = completedLessons;
-        const nextCompleted = Math.max(completedLessons, lessonIndex + 1);
-        setProgress(nextCompleted);
+        const nextCompleted = completedLessons;
+        renderProgress();
         renderLevels();
         if (nextCompleted > previousCompleted && lessons[nextCompleted]) {
           lines.push(`Unlocked: ${nextCompleted + 1}. ${lessons[nextCompleted].title}`);
@@ -961,6 +1038,8 @@ async function runAllTests(options = {}) {
         } else if (nextCompleted >= totalLessons) {
           lines.push("All lessons completed.");
           hideNextLessonAction();
+        } else {
+          setNextLessonAction(lessonIndex + 1);
         }
       }
       setConsole(lines.join("\n"), options.submitAfter ? "task-passed" : "all-tests-passed", "success");
@@ -972,7 +1051,7 @@ async function runAllTests(options = {}) {
 
     return allPassed;
   } catch (error) {
-    if (activeRun !== run) return false;
+    if (!canApplyRun(run, lesson, sourceCode)) return false;
     const message = error instanceof Error ? error.message : String(error);
     lines.push(`[执行错误]: ${message}`);
     setPassedTestCases(lesson, passedThisRun);
@@ -1087,13 +1166,12 @@ function bindEditorChrome(textarea, lineNode) {
 
 function saveEditorChange() {
   const lesson = getCurrentLesson();
-  if (codeEditor.value === (getDraftForLesson(lesson) ?? lesson.starterCode)) return;
+  if (codeEditor.value === (getDraftForLesson(lesson) ?? lesson.starterCode ?? "") || !refreshStoredProgress()) return;
   if (activeRun) {
     cancelRun();
     setConsole("代码已修改，请重新运行。", "等待运行");
   }
   saveCurrentDraft();
-  if (getPassedIds(lesson).size > 0) setPassedTestCases(lesson, []);
 }
 
 function bindEvents() {
@@ -1123,7 +1201,7 @@ function bindEvents() {
   codeEditor.addEventListener("input", saveEditorChange);
 
   focusCode.addEventListener("click", () => {
-    saveCurrentDraft();
+    if (!refreshStoredProgress()) return;
     setAnswerDrawer(false);
     focusEditor.value = codeEditor.value;
     focusStdinInput.value = stdinInput.value;
@@ -1197,14 +1275,18 @@ function bindEvents() {
   resetProgress.addEventListener("click", () => {
     if (!resetProgress.disabled && !window.confirm("确认重置学习进度？")) return;
 
-    clearDrafts();
+    progressResetId = crypto.randomUUID?.() ?? String(Date.now());
+    try {
+      localStorage.setItem(resetStorageKey, progressResetId);
+    } catch {
+      // The current tab can still reset its progress.
+    }
+    lessonDrafts = {};
     passedTestCaseIdsByLessonId = {};
     completedLessons = 0;
-    selectedTestCaseIdByLessonId = {};
-    hasLoadedLesson = false;
-    setProgress(0);
-    loadLesson(0);
-    setConsole(`Progress reset.\nLoaded: 1. ${getCurrentLesson().title}`, "已重置");
+    writeStoredDrafts();
+    writeStoredProgress();
+    showProgressReset();
   });
 
   themeToggle.addEventListener("click", () => {
@@ -1214,6 +1296,13 @@ function bindEvents() {
   });
 
   window.addEventListener("resize", syncAnswerDrawerBounds);
+  window.addEventListener("storage", (event) => {
+    if ([null, resetStorageKey, progressStorageKey].includes(event.key) && refreshStoredProgress()) {
+      renderTestCases();
+      renderLessonContent(getCurrentLesson());
+      updateResetButtonState();
+    }
+  });
 }
 
 function boot() {
@@ -1222,9 +1311,9 @@ function boot() {
     return;
   }
 
-  completedLessons = normalizeCompletedCount(completedLessons);
+  document.querySelector("#runnerNotice").hidden = usesLocalRunner;
   setTheme(readStoredTheme());
-  setProgress(completedLessons);
+  renderProgress();
   loadLesson(0);
   bindEvents();
   syncAnswerDrawerBounds();

@@ -283,6 +283,11 @@ function runTeachingPreview(code) {
 }
 
 async function handleRun(request, response) {
+  if (request.headers["content-type"]?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    sendJson(response, 415, { status: "error", stderr: "请发送 application/json 请求。" });
+    return;
+  }
+
   let payload;
   try {
     payload = JSON.parse(await readBody(request));
@@ -404,15 +409,29 @@ async function serveStatic(request, response) {
   }
 }
 
+function acceptsLocalRun(request) {
+  const hosts = request.headersDistinct.host;
+  if (hosts?.length !== 1) return false;
+  const authority = hosts[0].toLowerCase();
+  const port = request.socket.localPort;
+  const localHosts = ["localhost", "127.0.0.1"];
+  if (!localHosts.some(name => authority === `${name}:${port}` || (port === 80 && authority === name))) {
+    return false;
+  }
+  const origins = request.headersDistinct.origin;
+  const expectedOrigin = "http://" + authority.replace(/:80$/, "");
+  return !origins || (origins.length === 1 && origins[0] === expectedOrigin);
+}
+
 const server = createServer(async (request, response) => {
   try {
-    if (request.method === "GET" && request.url?.startsWith("/api/health")) {
+    const { pathname } = new URL(request.url, "http://127.0.0.1");
+    if (request.method === "GET" && pathname === "/api/health") {
       sendJson(response, 200, await getCompilerStatus());
       return;
     }
-    if (request.method === "POST" && request.url?.startsWith("/api/run")) {
-      const origin = request.headers.origin;
-      if (origin && (origin !== `http://${request.headers.host}` || !/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin))) {
+    if (request.method === "POST" && pathname === "/api/run") {
+      if (!acceptsLocalRun(request)) {
         sendJson(response, 403, { status: "error", stdout: "", stderr: "请从本地课程页面运行代码。", durationMs: 0 });
         return;
       }

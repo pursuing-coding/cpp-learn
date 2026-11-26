@@ -237,6 +237,46 @@ suite(test => {
     await check(() => page.locator("#lessonArticle h1").text(), /^2\. 变量、内存与类型系统/);
   });
 
+  test("another tab can reset progress while a submission is running", async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem("cpp-learn-progress-v2", JSON.stringify({ completedLessons: 1 })));
+    await page.reload();
+    await page.locator("#codeEditor").fill(helloWorld);
+    await page.evaluate(() => {
+      const frame = document.createElement("iframe");
+      frame.id = "resetTab";
+      frame.hidden = true;
+      frame.src = "./";
+      document.body.append(frame);
+    });
+    await check(() => page.evaluate(() => {
+      const doc = document.querySelector("#resetTab").contentDocument;
+      return doc.querySelector(".level-item.is-active") !== null &&
+        doc.querySelector("#progressText")?.textContent === "1/13 章" &&
+        doc.querySelector("#resetProgress")?.disabled === false;
+    }), true);
+
+    let reply;
+    await mockCppRunner(page, () => new Promise(resolve => { reply = resolve; }));
+    try {
+      await page.locator("#submitTask").click();
+      await check(() => typeof reply, "function");
+      const didReset = await page.evaluate(() => {
+        const other = document.querySelector("#resetTab").contentWindow;
+        other.confirm = () => true;
+        other.document.querySelector("#resetProgress").click();
+        return Boolean(other.localStorage.getItem("cpp-learn-reset-v3"));
+      });
+      assert.equal(didReset, true);
+      reply("Hello, C++ World!\n");
+      await check(() => page.locator("#progressText").text(), "0/13 章");
+      await check(() => page.locator("#testSummary").text(), "0/1 通过");
+      await page.reload();
+      await check(() => page.locator("#codeEditor").value(), /TODO: 输出 Hello, C\+\+ World!/);
+    } finally {
+      reply?.("Hello, C++ World!\n");
+    }
+  });
+
   test("uses the local compiler when the runner is not mocked", async ({ page }) => {
     await page.locator("#codeEditor").fill(helloWorld);
     await page.locator("#runCode").click();
